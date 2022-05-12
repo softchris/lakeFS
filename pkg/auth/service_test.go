@@ -4,25 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"reflect"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/treeverse/lakefs/pkg/permissions"
-
 	sq "github.com/Masterminds/squirrel"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-test/deep"
+	"github.com/golang/mock/gomock"
 	"github.com/google/uuid"
 	"github.com/ory/dockertest/v3"
 	"github.com/treeverse/lakefs/pkg/auth"
 	"github.com/treeverse/lakefs/pkg/auth/crypt"
+	"github.com/treeverse/lakefs/pkg/auth/mock"
 	"github.com/treeverse/lakefs/pkg/auth/model"
 	authparams "github.com/treeverse/lakefs/pkg/auth/params"
+	"github.com/treeverse/lakefs/pkg/db"
 	"github.com/treeverse/lakefs/pkg/logging"
+	"github.com/treeverse/lakefs/pkg/permissions"
 	"github.com/treeverse/lakefs/pkg/testutil"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -755,4 +759,227 @@ func benchmarkListEffectivePolicies(b *testing.B, s *auth.DBAuthService, userNam
 			b.Fatal("Failed to list effective policies", err)
 		}
 	}
+}
+
+func TestAPIAuthService_GetUserById(t *testing.T) {
+	mockClient, s := GetApiService(t)
+	tests := []struct {
+		name               string
+		responseStatusCode int
+		users              []string
+		expectedUserID     int64
+		expectedErr        error
+	}{
+		{
+			name:               "one user",
+			responseStatusCode: http.StatusOK,
+			users:              []string{"one"},
+			expectedUserID:     0,
+			expectedErr:        nil,
+		}, {
+			name:               "no users",
+			responseStatusCode: http.StatusOK,
+			users:              []string{},
+			expectedUserID:     0,
+			expectedErr:        db.ErrNotFound,
+		},
+		{
+			name:               "two responses",
+			responseStatusCode: http.StatusOK,
+			users:              []string{"one", "two"},
+			expectedUserID:     0,
+			expectedErr:        auth.ErrNonUnique,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			returnedUsers := make([]auth.User, len(tt.users))
+			for i, u := range tt.users {
+				returnedUsers[i] = auth.User{
+					Id:   0,
+					Name: u,
+				}
+			}
+			returnedUserList := &auth.UserList{
+				Pagination: auth.Pagination{},
+				Results:    returnedUsers,
+			}
+			mockClient.EXPECT().ListUsersWithResponse(gomock.Any(), gomock.Any()).Return(&auth.ListUsersResponse{
+				Body: nil,
+				HTTPResponse: &http.Response{
+					StatusCode: tt.responseStatusCode,
+				},
+				JSON200:     returnedUserList,
+				JSON401:     nil,
+				JSONDefault: nil,
+			}, nil)
+
+			ctx := context.Background()
+			ID := int64(12)
+			gotUser, err := s.GetUserByID(ctx, ID)
+			if !errors.Is(err, tt.expectedErr) {
+				t.Fatalf("GetUserById(%d): expected err: %s got: %s", ID, tt.expectedErr, err)
+			}
+			if err != nil {
+				return
+			}
+
+			expectedUserID := int64(0)
+			if gotUser.ID != expectedUserID {
+				t.Fatalf("expected user id:%d, got:%d", expectedUserID, gotUser.ID)
+			}
+		})
+	}
+
+}
+
+func TestAPIAuthService_GetUserByEmail(t *testing.T) {
+	mockClient, s := GetApiService(t)
+
+	tests := []struct {
+		name               string
+		responseStatusCode int
+		users              []string
+		expectedUserID     int64
+		expectedErr        error
+	}{
+		{
+			name:               "one user",
+			responseStatusCode: http.StatusOK,
+			users:              []string{"one"},
+			expectedUserID:     0,
+			expectedErr:        nil,
+		}, {
+			name:               "no users",
+			responseStatusCode: http.StatusOK,
+			users:              []string{},
+			expectedUserID:     0,
+			expectedErr:        db.ErrNotFound,
+		},
+		{
+			name:               "two responses",
+			responseStatusCode: http.StatusOK,
+			users:              []string{"one", "two"},
+			expectedUserID:     0,
+			expectedErr:        auth.ErrNonUnique,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			returnedUsers := make([]auth.User, len(tt.users))
+			for i, u := range tt.users {
+				returnedUsers[i] = auth.User{
+					Id:   0,
+					Name: u,
+				}
+			}
+			returnedUserList := &auth.UserList{
+				Pagination: auth.Pagination{},
+				Results:    returnedUsers,
+			}
+			mockClient.EXPECT().ListUsersWithResponse(gomock.Any(), gomock.Any()).Return(&auth.ListUsersResponse{
+				Body: nil,
+				HTTPResponse: &http.Response{
+					StatusCode: tt.responseStatusCode,
+				},
+				JSON200:     returnedUserList,
+				JSON401:     nil,
+				JSONDefault: nil,
+			}, nil)
+
+			ctx := context.Background()
+			ID := int64(12)
+			gotUser, err := s.GetUserByEmail(ctx, "mail@test.com")
+			if !errors.Is(err, tt.expectedErr) {
+				t.Fatalf("GetUserById(%d): expected err: %s got: %s", ID, tt.expectedErr, err)
+			}
+			if err != nil {
+				return
+			}
+
+			expectedUserID := int64(0)
+			if gotUser.ID != expectedUserID {
+				t.Fatalf("expected user id:%d, got:%d", expectedUserID, gotUser.ID)
+			}
+		})
+	}
+
+}
+
+func GetApiService(t *testing.T) (*mock.MockClientWithResponsesInterface, *auth.APIAuthService) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockClient := mock.NewMockClientWithResponsesInterface(ctrl)
+	secretStore := crypt.NewSecretStore([]byte("secret"))
+	s, err := auth.NewAPIAuthServiceWithClient(mockClient, secretStore, authparams.ServiceCache{
+		Enabled: false,
+	}, logging.Default())
+	if err != nil {
+		t.Fatalf("failed initiating API service with mock")
+	}
+	return mockClient, s
+}
+
+func TestAPIAuthService_GetGroup(t *testing.T) {
+	mockClient, s := GetApiService(t)
+	const groupName = "groupName"
+	const creationDate = 12345678
+
+	response := &auth.GetGroupResponse{
+		HTTPResponse: &http.Response{StatusCode: http.StatusOK},
+	}
+	if http.StatusOK == http.StatusOK {
+		response.JSON200 = &auth.Group{
+			CreationDate: creationDate,
+			Name:         groupName,
+		}
+	}
+	mockClient.EXPECT().GetGroupWithResponse(gomock.Any(), groupName).Return(response, nil)
+	group, err := s.GetGroup(context.Background(), groupName)
+	if err != nil {
+		t.Errorf("failed with error - %s", err)
+	}
+	if group.DisplayName != groupName {
+		t.Errorf("expected group name: %s got: %s ", groupName, group.DisplayName)
+	}
+}
+
+func TestAPIAuthService_CreateGroup(t *testing.T) {
+	mockClient, s := GetApiService(t)
+	const groupName = "groupName"
+	const creationDate = 12345678
+
+	mockClient.EXPECT().CreateGroupWithResponse(gomock.Any(), auth.CreateGroupJSONRequestBody{
+		Id: groupName,
+	}).Return(&auth.CreateGroupResponse{
+		HTTPResponse: &http.Response{StatusCode: http.StatusCreated},
+		JSON201: &auth.Group{
+			CreationDate: creationDate,
+			Name:         groupName,
+		},
+	}, nil)
+	err := s.CreateGroup(context.Background(), &model.Group{
+		CreatedAt:   time.Unix(creationDate, 0),
+		DisplayName: groupName,
+	})
+	if err != nil {
+		t.Errorf("failed with error - %s", err)
+	}
+}
+
+func TestAPIAuthService_HashAndUpdatePassword(t *testing.T) {
+	ctx := context.Background()
+	mockClient, s := GetApiService(t)
+	const (
+		username = "foo"
+		password = "password"
+	)
+	encryptedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	mockClient.EXPECT().UpdatePasswordWithResponse(ctx, username, encryptedPassword).Return(
+		&auth.UpdatePasswordResponse{
+			HTTPResponse: &http.Response{StatusCode: http.StatusOK},
+		},
+		nil)
+	testutil.MustDo(t, "encrypt password", err)
+	s.HashAndUpdatePassword(ctx, username, password)
 }

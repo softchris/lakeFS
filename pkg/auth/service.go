@@ -964,7 +964,7 @@ func checkPermissions(node permissions.Node, username string, policies []*model.
 	return allowed
 }
 
-func (s *DBAuthService) Authorize(ctx context.Context, req *AuthorizationRequest) (*AuthorizationResponse, error) {
+func authorize(ctx context.Context, req *AuthorizationRequest, s Service) (*AuthorizationResponse, error) {
 	policies, _, err := s.ListEffectivePolicies(ctx, req.Username, &model.PaginationParams{
 		After:  "", // all
 		Amount: -1, // all
@@ -985,6 +985,10 @@ func (s *DBAuthService) Authorize(ctx context.Context, req *AuthorizationRequest
 
 	// we're allowed!
 	return &AuthorizationResponse{Allowed: true}, nil
+}
+
+func (s *DBAuthService) Authorize(ctx context.Context, req *AuthorizationRequest) (*AuthorizationResponse, error) {
+	return authorize(ctx, req, s)
 }
 
 func (s *DBAuthService) ClaimTokenIDOnce(ctx context.Context, tokenID string, expiresAt int64) error {
@@ -1016,7 +1020,8 @@ func (s *DBAuthService) markTokenSingleUse(ctx context.Context, tokenID string, 
 }
 
 type APIAuthService struct {
-	apiClient   *ClientWithResponses
+	log         logging.Logger
+	apiClient   ClientWithResponsesInterface
 	secretStore crypt.SecretStore
 	cache       Cache
 }
@@ -1062,6 +1067,10 @@ func (a *APIAuthService) GetUserByID(ctx context.Context, userID int64) (*model.
 		results := resp.JSON200.Results
 		if len(results) == 0 {
 			return nil, ErrNotFound
+		}
+		if len(results) > 1 {
+			a.log.WithField("userID", userID).Error("GetUserByID - more than one user for userID")
+			return nil, ErrNonUnique
 		}
 		u := results[0]
 		return &model.User{
@@ -1110,6 +1119,10 @@ func (a *APIAuthService) GetUserByEmail(ctx context.Context, email string) (*mod
 		results := resp.JSON200.Results
 		if len(results) == 0 {
 			return nil, ErrNotFound
+		}
+		if len(results) > 1 {
+			a.log.WithField("email", email).Error("GetUserByEmail - more than one user for email")
+			return nil, ErrNonUnique
 		}
 		u := results[0]
 		user := &model.User{
@@ -1636,25 +1649,7 @@ func (a *APIAuthService) ListGroupPolicies(ctx context.Context, groupDisplayName
 }
 
 func (a *APIAuthService) Authorize(ctx context.Context, req *AuthorizationRequest) (*AuthorizationResponse, error) {
-	policies, _, err := a.ListEffectivePolicies(ctx, req.Username, &model.PaginationParams{
-		After:  "", // all
-		Amount: -1, // all
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	allowed := checkPermissions(req.RequiredPermissions, req.Username, policies)
-
-	if allowed != CheckAllow {
-		return &AuthorizationResponse{
-			Allowed: false,
-			Error:   ErrInsufficientPermissions,
-		}, nil
-	}
-
-	// we're allowed!
-	return &AuthorizationResponse{Allowed: true}, nil
+	return authorize(ctx, req, a)
 }
 
 func (a *APIAuthService) ClaimTokenIDOnce(ctx context.Context, tokenID string, expiresAt int64) error {
@@ -1671,7 +1666,7 @@ func (a *APIAuthService) ClaimTokenIDOnce(ctx context.Context, tokenID string, e
 	return a.validateResponse(res, http.StatusCreated)
 }
 
-func NewAPIAuthService(apiEndpoint, token string, secretStore crypt.SecretStore, cacheConf params.ServiceCache, timeout *time.Duration) (*APIAuthService, error) {
+func NewAPIAuthService(apiEndpoint, token string, secretStore crypt.SecretStore, cacheConf params.ServiceCache, timeout *time.Duration, log logging.Logger) (*APIAuthService, error) {
 	bearerToken, err := securityprovider.NewSecurityProviderBearerToken(token)
 	if err != nil {
 		return nil, err
@@ -1689,7 +1684,7 @@ func NewAPIAuthService(apiEndpoint, token string, secretStore crypt.SecretStore,
 	if err != nil {
 		return nil, err
 	}
-	logging.Default().Info("initialized authorization service")
+	log.Info("initialized authorization service")
 	var cache Cache
 	if cacheConf.Enabled {
 		cache = NewLRUCache(cacheConf.Size, cacheConf.TTL, cacheConf.EvictionJitter)
@@ -1697,6 +1692,22 @@ func NewAPIAuthService(apiEndpoint, token string, secretStore crypt.SecretStore,
 		cache = &DummyCache{}
 	}
 	return &APIAuthService{
+		log:         log,
+		apiClient:   client,
+		secretStore: secretStore,
+		cache:       cache,
+	}, nil
+}
+
+func NewAPIAuthServiceWithClient(client ClientWithResponsesInterface, secretStore crypt.SecretStore, cacheConf params.ServiceCache, log logging.Logger) (*APIAuthService, error) {
+	var cache Cache
+	if cacheConf.Enabled {
+		cache = NewLRUCache(cacheConf.Size, cacheConf.TTL, cacheConf.EvictionJitter)
+	} else {
+		cache = &DummyCache{}
+	}
+	return &APIAuthService{
+		log:         log,
 		apiClient:   client,
 		secretStore: secretStore,
 		cache:       cache,
