@@ -8,7 +8,6 @@ import (
 
 	nanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/treeverse/lakefs/pkg/kv/dynamodb"
-	"github.com/treeverse/lakefs/pkg/testutil"
 )
 
 const chars = "abcdef1234567890"
@@ -18,21 +17,21 @@ var (
 )
 
 func testUniqueTableName() string {
-	return "kvstore_" + nanoid.MustGenerate(chars, 8)
+	return "kvstore_test_" + nanoid.MustGenerate(chars, 8)
 }
 
 func TestMain(m *testing.M) {
-	databaseURI, cleanpFunc, err := testutil.RunLocalDynamoDBInstance()
-	if err != nil {
-		log.Fatalf("Could not connect to Docker: %s", err)
-	}
+	//databaseURI, cleanpFunc, err := testutil.RunLocalDynamoDBInstance()
+	//if err != nil {
+	//	log.Fatalf("Could not connect to Docker: %s", err)
+	//}
 
 	testParams := &dynamodb.Params{
 		TableName:          testUniqueTableName(),
-		ReadCapacityUnits:  100,
-		WriteCapacityUnits: 100,
+		ReadCapacityUnits:  1000,
+		WriteCapacityUnits: 1000,
 		ScanLimit:          10,
-		Endpoint:           databaseURI,
+		//Endpoint:           databaseURI,
 		AwsRegion:          "us-east-1",
 		AwsAccessKeyID:     "fakeMyKeyId",
 		AwsSecretAccessKey: "fakeSecretAccessKey",
@@ -46,6 +45,6 @@ func TestMain(m *testing.M) {
 	dsn = string(dsnBytes)
 
 	code := m.Run()
-	cleanpFunc()
+	//cleanpFunc()
 	os.Exit(code)
 }

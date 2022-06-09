@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
@@ -101,14 +100,7 @@ func (d *Driver) Open(ctx context.Context, dsn string) (kv.Store, error) {
 	// Create DynamoDB client
 	svc := dynamodb.New(sess,
 		aws.NewConfig().
-			WithEndpoint(params.Endpoint).
-			WithRegion(params.AwsRegion).
-			WithCredentials(credentials.NewCredentials(
-				&credentials.StaticProvider{
-					Value: credentials.Value{
-						AccessKeyID:     params.AwsAccessKeyID,
-						SecretAccessKey: params.AwsSecretAccessKey,
-					}})))
+			WithRegion(params.AwsRegion))
 
 	err = setupKeyValueDatabase(ctx, svc, params)
 	if err != nil {
@@ -192,8 +184,9 @@ func (s *Store) Get(ctx context.Context, partitionKey, key []byte) (*kv.ValueWit
 	}
 
 	result, err := s.svc.GetItemWithContext(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(s.params.TableName),
-		Key:       s.bytesKeyToDynamoKey(partitionKey, key),
+		TableName:      aws.String(s.params.TableName),
+		Key:            s.bytesKeyToDynamoKey(partitionKey, key),
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get item: %s (key=%v): %w", err, string(key), kv.ErrOperationFailed)
