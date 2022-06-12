@@ -13,10 +13,10 @@ const (
 	DynamodbLocalPort         = "6432"
 	DynamodbLocalURI          = "http://localhost:6432"
 
-	WaitForContainerSec = 2
+	StopContainerTimeoutSec = 10
 )
 
-func RunLocalDynamoDBInstance() (string, func(), error) {
+func GetDynamoDBInstance() (string, func(), error) {
 	dockerPool, err := dockertest.NewPool("")
 	if err != nil {
 		return "", nil, fmt.Errorf("could not connect to Docker: %w", err)
@@ -37,6 +37,7 @@ func RunLocalDynamoDBInstance() (string, func(), error) {
 
 	// set cleanup
 	closer := func() {
+		err = dockerPool.Client.StopContainer(resource.Container.ID, StopContainerTimeoutSec) // For some reason Purge doesn't stop the container
 		err := dockerPool.Purge(resource)
 		if err != nil {
 			panic("could not kill dynamodb local container")
@@ -50,7 +51,7 @@ func RunLocalDynamoDBInstance() (string, func(), error) {
 	}
 
 	err = dockerPool.Retry(func() error {
-		// waiting for dynamodb container to be ready by issuing an http get request with
+		// waiting for dynamodb container to be ready by issuing an HTTP get request with
 		// exponential backoff retry. The response is not really meaningful for that case
 		// and so is ignored
 		resp, err := http.Get(DynamodbLocalURI)

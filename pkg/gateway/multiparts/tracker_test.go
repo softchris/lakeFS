@@ -12,7 +12,9 @@ import (
 	"github.com/thanhpk/randstr"
 	"github.com/treeverse/lakefs/pkg/gateway/multiparts"
 	"github.com/treeverse/lakefs/pkg/kv"
+	"github.com/treeverse/lakefs/pkg/kv/dynamodb"
 	"github.com/treeverse/lakefs/pkg/kv/kvtest"
+	_ "github.com/treeverse/lakefs/pkg/kv/postgres"
 	"github.com/treeverse/lakefs/pkg/testutil"
 )
 
@@ -273,7 +275,7 @@ func BenchmarkMultipartsTrackerFlowConcurrent(b *testing.B) {
 	}
 }
 
-func runBenchmarkMultipartsTracker(b *testing.B, bmFunc RunBenchmarkFunc, concurrencyParams ...int) {
+func runBenchmarkMultipartsTracker(b *testing.B, _ RunBenchmarkFunc, _ ...int) {
 	runBenchmarkMultipartsTrackerWithDescription(b, benchmarkMixedOps, "")
 }
 
@@ -282,6 +284,7 @@ func runBenchmarkMultipartsTrackerWithDescription(b *testing.B, bmFunc RunBenchm
 	b.Run(description+"db", func(b *testing.B) { runDBBenchmark(b, ctx, bmFunc, concurrencyParams...) })
 	b.Run(description+"kv_mem", func(b *testing.B) { runKVMemBenchmark(b, ctx, bmFunc, concurrencyParams...) })
 	b.Run(description+"kv_postgres", func(b *testing.B) { runKVPostgresBenchmark(b, ctx, bmFunc, concurrencyParams...) })
+	b.Run(description+"kv_dynamodb", func(b *testing.B) { runKVDynamoDBBenchmark(b, ctx, bmFunc, concurrencyParams...) })
 }
 
 // Concurrency params index in array
@@ -314,7 +317,15 @@ func runKVPostgresBenchmark(b *testing.B, ctx context.Context, bmFunc RunBenchma
 	bmFunc(b, ctx, tracker, concurrencyParams...)
 }
 
-func benchmarkCreateOp(b *testing.B, ctx context.Context, tracker multiparts.Tracker, concurrencyParams ...int) {
+func runKVDynamoDBBenchmark(b *testing.B, ctx context.Context, bmFunc RunBenchmarkFunc, concurrencyParams ...int) {
+	b.Helper()
+	store := kvtest.MakeStoreByName(dynamodb.DriverName, dynamoDSN)(b, ctx)
+	defer store.Close()
+	tracker := multiparts.NewTracker(kv.StoreMessage{Store: store})
+	bmFunc(b, ctx, tracker, concurrencyParams...)
+}
+
+func benchmarkCreateOp(b *testing.B, ctx context.Context, tracker multiparts.Tracker, _ ...int) {
 	keys := generateRandomKeys(b.N)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
@@ -333,7 +344,7 @@ func createMpu(ctx context.Context, tracker multiparts.Tracker, key string) erro
 	})
 }
 
-func benchmarkGetOpSeq(b *testing.B, ctx context.Context, tracker multiparts.Tracker, concurrencyParams ...int) {
+func benchmarkGetOpSeq(b *testing.B, ctx context.Context, tracker multiparts.Tracker, _ ...int) {
 	keys := createEntriesForTest(b, ctx, tracker, b.N)
 
 	b.ResetTimer()
@@ -343,7 +354,7 @@ func benchmarkGetOpSeq(b *testing.B, ctx context.Context, tracker multiparts.Tra
 	}
 }
 
-func benchmarkGetOpRand(b *testing.B, ctx context.Context, tracker multiparts.Tracker, concurrencyParams ...int) {
+func benchmarkGetOpRand(b *testing.B, ctx context.Context, tracker multiparts.Tracker, _ ...int) {
 	keys := createEntriesForTest(b, ctx, tracker, b.N)
 
 	b.ResetTimer()
@@ -353,7 +364,7 @@ func benchmarkGetOpRand(b *testing.B, ctx context.Context, tracker multiparts.Tr
 	}
 }
 
-func benchmarkDeleteOpSeq(b *testing.B, ctx context.Context, tracker multiparts.Tracker, concurrencyParams ...int) {
+func benchmarkDeleteOpSeq(b *testing.B, ctx context.Context, tracker multiparts.Tracker, _ ...int) {
 	keys := createEntriesForTest(b, ctx, tracker, b.N)
 
 	b.ResetTimer()
@@ -363,7 +374,7 @@ func benchmarkDeleteOpSeq(b *testing.B, ctx context.Context, tracker multiparts.
 	}
 }
 
-func benchmarkMixedOps(b *testing.B, ctx context.Context, tracker multiparts.Tracker, concurrencyParams ...int) {
+func benchmarkMixedOps(b *testing.B, ctx context.Context, tracker multiparts.Tracker, _ ...int) {
 	keys := generateRandomKeys(b.N)
 
 	b.ResetTimer()
@@ -375,11 +386,11 @@ func benchmarkMixedOps(b *testing.B, ctx context.Context, tracker multiparts.Tra
 		op := rand.Intn(10)
 		switch op {
 		case 0: // Create
-			createMpu(ctx, tracker, key)
+			_ = createMpu(ctx, tracker, key)
 		case 1: // Delete
-			tracker.Delete(ctx, key)
+			_ = tracker.Delete(ctx, key)
 		default: // Get
-			tracker.Get(ctx, key)
+			_, _ = tracker.Get(ctx, key)
 		}
 	}
 }
@@ -454,3 +465,30 @@ func generateRandomKeys(n int) []string {
 func generateRandomKey(len int) string {
 	return randstr.String(len, randomKeyCharset)
 }
+
+//func BenchmarkKVStores(b *testing.B) {
+//	ctx := context.Background()
+//	dynamoURI, cleanupFunc, err := testutil.GetDynamoDBInstance()
+//	testutil.MustDo(b, "connect to docker", err)
+//	defer cleanupFunc()
+//
+//	testParams := &dynamodb.Params{
+//		TableName:          "tracker_kv_store",
+//		ReadCapacityUnits:  100,
+//		WriteCapacityUnits: 100,
+//		ScanLimit:          10,
+//		Endpoint:           dynamoURI,
+//		AwsRegion:          "us-east-1",
+//		AwsAccessKeyID:     "fakeMyKeyId",
+//		AwsSecretAccessKey: "fakeSecretAccessKey",
+//	}
+//
+//	dsnBytes, err := json.Marshal(testParams)
+//	testutil.MustDo(b, "initialize test params", err)
+//	dsn := string(dsnBytes)
+//	dynamoStore := kvtest.MakeStoreByName(dynamodb.DriverName, dsn)(b, ctx)
+//	defer dynamoStore.Close()
+//	database, _ := testutil.GetDB(b, databaseURI)
+//	postgresStore := kvtest.MakeStoreByName(postgres.DriverName, databaseURI)(b, ctx)
+//	defer postgresStore.Close()
+//}
